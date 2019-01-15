@@ -156,7 +156,9 @@ def monitor_loop(config):
     last_blink = 0
 
     while 1:
+    #for _ in range(1):
         data = {}
+        values = []
         start = time.time()
 
         while time.time() - start < 10:
@@ -165,19 +167,27 @@ def monitor_loop(config):
                 toggle_board_led()
 
             value = adc.read()
+            values.append(value)
             data.setdefault(value, 0)
             data[value] += 1
 
             time.sleep(loop_delay)
+
+        categorized = categorize_data(config, data)
+        avg_value = float(sum(values)) / float(len(values))
+        categorized['avg_val'] = avg_value
 
         l_data = []
         for key in sorted(data):
             l_data.append("{}:{}".format(key, data[key]))
         log_msg = ', '.join(l_data)
         log(config, "Raw reads: |{}|".format(log_msg))
-        categorized = categorize_data(config, data)
         print(categorized)
 
+        avg_msg = "Avg: {:.2f}".format(avg_value)
+        print(avg_msg)
+        log(config, avg_msg)
+    
         send_data(config, categorized)
 
 def send_data(config, categorized):
@@ -194,14 +204,56 @@ def send_data(config, categorized):
     s = socket.socket()
     s.connect(addr)
 
-    for category in ('no', 'maybe', 'yes'):
+    for category in ('no', 'maybe', 'yes', 'avg_val'):
         name = 'iot.home.oilburner.{}'.format(category)
         line = '{} {} {}\n'.format(name, categorized[category], ts)
         print("Sending line: {}".format(line))
         s.send(line)
     s.close()
 
+def pin_pulse(config, pin_num):
+    pin = machine.Pin(pin_num, machine.Pin.OUT)
+
+    for _ in range(10):
+        pin.value(not pin.value())
+        time.sleep(0.5)
+
+    pin.value(True)
+
+def led_pulse2(pins, delay):
+    offsets = {}
+    for idx, pin in enumerate(pins):
+        offsets[id(pin)] = idx * 20
+
+    top = max(offsets.values()) + 200
+
+    for duty in range(top):
+        for pin in pins:
+            val = duty - offsets[id(pin)]
+            if val > 100:
+                val = 100 - (val - 100)
+            if val < 0:
+                val = 0
+
+            pin.duty(val)
+        time.sleep_ms(delay)
+
+def led_pulse(pin, delay):
+    for i in range(100):
+        pin.duty(i)
+        time.sleep_ms(delay)
+    for i in range(100, 0, -1):
+        pin.duty(i)
+        time.sleep_ms(delay)
+
 if __name__ == '__main__':
     config = read_config()
     setup_network(config)
-    monitor_loop(config)
+    try:
+        monitor_loop(config)
+    except Exception as exc:
+        f = open('err_log.txt', 'a+')
+        ts = get_timestamp(config)
+        f.write("{}: Exception\n{}\n\n".format(ts, exc))
+        f.close()
+        machine.reset()
